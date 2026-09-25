@@ -1,0 +1,41 @@
+version: "3.9"
+
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+    environment:
+      # No SMS/IVR credentials set on purpose -- alerts run in MOCK mode.
+      # Set these only if you have real provider credentials:
+      # - SMS_PROVIDER_API_KEY=
+      # - IVR_PROVIDER_API_KEY=
+      - PYTHONUNBUFFERED=1
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+
+  # Optional: PostgreSQL + PostGIS, for a real (non-demo-catchment-in-memory)
+  # deployment where the drainage graph and historical events are persisted
+  # rather than rebuilt in memory on every backend restart. Not required to
+  # run the demo -- the backend currently keeps the catchment in memory.
+  db:
+    image: postgis/postgis:16-3.4
+    environment:
+      - POSTGRES_DB=hydroloop
+      - POSTGRES_USER=hydroloop
+      - POSTGRES_PASSWORD=hydroloop_dev_only_change_me
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    profiles: ["with-db"]  # docker compose --profile with-db up
+
+volumes:
+  pgdata:

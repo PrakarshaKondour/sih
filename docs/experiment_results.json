@@ -1,0 +1,85 @@
+{
+  "A_rainfall_only": {
+    "description": "uniform depth from total runoff / total catchment area, no spatial routing",
+    "uniform_depth_m": 0.166,
+    "metrics": {
+      "precision": 0.146,
+      "recall": 1.0,
+      "f1": 0.255,
+      "tp": 12,
+      "fp": 70,
+      "fn": 0,
+      "tn": 0
+    }
+  },
+  "B_rainfall_plus_dem": {
+    "description": "spatially distributed runoff (DEM-nearest-node), infinite drainage capacity",
+    "metrics": {
+      "precision": 0.158,
+      "recall": 0.5,
+      "f1": 0.24,
+      "tp": 6,
+      "fp": 32,
+      "fn": 6,
+      "tn": 38
+    }
+  },
+  "C_plus_drainage_network": {
+    "description": "capacity-constrained simulation, default effective-capacity priors",
+    "metrics": {
+      "precision": 0.16,
+      "recall": 1.0,
+      "f1": 0.276,
+      "tp": 12,
+      "fp": 63,
+      "fn": 0,
+      "tn": 7
+    }
+  },
+  "D_plus_inverse_calibration": {
+    "description": "capacity factors optimized via scipy.optimize (Nelder-Mead)",
+    "metrics": {
+      "precision": 0.16,
+      "recall": 1.0,
+      "f1": 0.276,
+      "tp": 12,
+      "fp": 63,
+      "fn": 0,
+      "tn": 7
+    },
+    "calibrated_factors": {
+      "piped_sewer": 0.7683211007859247,
+      "open_channel": 0.3327429367653991,
+      "outfall_connector": 1.0,
+      "inferred_flowpath": 0.2711077735181694
+    }
+  },
+  "E_plus_cctv_assimilation": {
+    "description": "local state correction at camera-adjacent nodes (not a graph-wide re-run)",
+    "assimilation_corrections": [
+      {
+        "corrected_depth_m": 2.09,
+        "predicted_depth_m": 2.809,
+        "observed_depth_m": 0.146,
+        "weight_used": 0.27,
+        "residual_m": -2.663,
+        "node_id": "SYN-MH-0014"
+      },
+      {
+        "corrected_depth_m": 1.265,
+        "predicted_depth_m": 1.7,
+        "observed_depth_m": 0.146,
+        "weight_used": 0.28,
+        "residual_m": -1.554,
+        "node_id": "SYN-MH-0015"
+      }
+    ]
+  },
+  "_meta": {
+    "event": "2020-10-13 profile (192mm/6h)",
+    "depth_threshold_m": 0.15,
+    "n_observed_flooded_nodes": 12,
+    "n_total_nodes": 82,
+    "note": "SYNTHETIC VALIDATION throughout -- ground truth is synthetic. depth MAE/RMSE and spatial IoU are NOT reported: no per-node observed depth exists in this repo to compute them against (see docs/historical_event_13oct2020.md)."
+  }
+}
