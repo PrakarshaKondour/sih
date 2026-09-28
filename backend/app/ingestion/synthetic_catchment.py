@@ -179,24 +179,75 @@ def snap_sewer_outfalls_to_nala(sewerlines: gpd.GeoDataFrame, nala: gpd.GeoDataF
     return gpd.GeoDataFrame(connectors, geometry="geometry", crs="EPSG:4326")
 
 
-def generate_roads(bounds: CatchmentBounds, n: int = 14) -> gpd.GeoDataFrame:
-    rng = _rng()
+def generate_roads(bounds: CatchmentBounds, n: int = 50) -> gpd.GeoDataFrame:
+    """Build a deliberately synthetic, but connected, neighborhood network.
+
+    Coordinates below are normalized to the demo catchment.  Shared end points
+    give the routing graph real intersections, while intermediate vertices make
+    the roads look like streets shaped around blocks and drainage rather than a
+    rectangular lattice.  The network has a small roundabout, collector loops,
+    side streets, and several intentional cul-de-sacs.
+    """
+    def point(x, y):
+        return (bounds.min_lon + x * (bounds.max_lon - bounds.min_lon),
+                bounds.min_lat + y * (bounds.max_lat - bounds.min_lat))
+
+    # Major spines first, then connected collectors and local streets. Values
+    # are normalized coordinates so the geometry remains synthetic and portable.
+    paths = [
+        [(0.00,.18),(.13,.22),(.28,.26),(.43,.30),(.61,.35),(.82,.43),(1.00,.48)],
+        [(0.05,.82),(.18,.74),(.34,.66),(.49,.59),(.66,.54),(.84,.50),(1.00,.48)],
+        [(.15,1.00),(.22,.84),(.28,.70),(.34,.66),(.43,.52),(.49,.36),(.55,.00)],
+        [(.00,.62),(.14,.60),(.28,.58),(.45,.59),(.66,.64),(.85,.72),(1.00,.78)],
+        [(.09,.12),(.16,.29),(.20,.45),(.28,.58),(.38,.71),(.47,.87)],
+        [(.70,.05),(.68,.20),(.66,.35),(.66,.54),(.72,.70),(.82,.90)],
+        [(.08,.39),(.19,.43),(.33,.45),(.49,.45),(.62,.43),(.77,.38),(.93,.33)],
+        [(.31,.03),(.35,.17),(.41,.30),(.49,.36),(.59,.43),(.70,.50),(.89,.58)],
+        [(.03,.74),(.17,.70),(.30,.68),(.45,.69),(.61,.74),(.77,.82)],
+        [(.42,.99),(.44,.86),(.45,.72),(.45,.59),(.46,.46),(.49,.36)],
+        [(.06,.18),(.13,.28),(.20,.45)], [(.13,.22),(.14,.39),(.19,.43)],
+        [(.20,.45),(.29,.50),(.45,.59)], [(.28,.26),(.28,.42),(.33,.45)],
+        [(.34,.66),(.35,.56),(.33,.45)], [(.43,.30),(.46,.38),(.49,.45)],
+        [(.49,.45),(.54,.52),(.66,.54)], [(.61,.35),(.62,.43),(.66,.54)],
+        [(.66,.54),(.72,.48),(.77,.38)], [(.77,.38),(.82,.43),(.84,.50)],
+        [(.14,.60),(.19,.52),(.20,.45)], [(.28,.58),(.31,.51),(.33,.45)],
+        [(.45,.59),(.49,.52),(.49,.45)], [(.66,.64),(.66,.59),(.66,.54)],
+        [(.85,.72),(.84,.61),(.84,.50)], [(.18,.74),(.24,.78),(.32,.79),(.38,.76),(.38,.71)],
+        [(.38,.71),(.45,.72),(.52,.70),(.57,.65),(.57,.59)], [(.57,.59),(.52,.54),(.49,.52)],
+        [(.57,.65),(.66,.67),(.73,.63),(.72,.55),(.66,.54)], [(.61,.74),(.62,.69),(.66,.67)],
+        [(.66,.67),(.72,.70),(.78,.68),(.80,.61),(.77,.55)], [(.77,.55),(.84,.58),(.90,.56)],
+        [(.20,.45),(.12,.49),(.06,.52)], [(.33,.45),(.28,.38),(.23,.35)],
+        [(.49,.45),(.54,.38),(.58,.30),(.62,.26)], [(.62,.43),(.72,.35),(.79,.29)],
+        [(.70,.50),(.78,.47),(.84,.50)], [(.45,.69),(.39,.61),(.35,.56)],
+        [(.28,.70),(.28,.82),(.32,.88)], [(.22,.84),(.13,.87),(.07,.92)],
+        [(.45,.59),(.39,.52),(.34,.50)], [(.45,.59),(.54,.61),(.60,.59)],
+        [(.66,.54),(.58,.50),(.54,.52)], [(.82,.43),(.88,.38),(.95,.39)],
+        [(.49,.36),(.42,.30),(.36,.28)], [(.66,.35),(.73,.27),(.79,.20)],
+        [(.16,.29),(.25,.22),(.31,.19)], [(.28,.58),(.22,.58),(.16,.55)],
+        [(.70,.50),(.76,.57),(.80,.61)], [(.34,.66),(.30,.61),(.28,.58)],
+    ]
     rows = []
-    for i in range(n):
-        horizontal = i % 2 == 0
-        if horizontal:
-            lat = rng.uniform(bounds.min_lat, bounds.max_lat)
-            geom = LineString([(bounds.min_lon, lat), (bounds.max_lon, lat)])
-        else:
-            lon = rng.uniform(bounds.min_lon, bounds.max_lon)
-            geom = LineString([(lon, bounds.min_lat), (lon, bounds.max_lat)])
+    for i, path in enumerate(paths[:n]):
+        road_type = "primary" if i < 4 else "secondary" if i < 11 else "local"
+        width = 14 if road_type == "primary" else 9 if road_type == "secondary" else 5.5
+        geometry = LineString([point(x, y) for x, y in path])
+        length_m = round(float(geometry.length * 111_000), 1)
+        road_id = f"R-{i + 1:03d}"
         rows.append({
-            "road_id": f"SYN-RD-{i:03d}",
-            "geometry": geom,
-            "road_name": f"Demo Road {i+1}",
-            "road_class": str(rng.choice(["arterial", "collector", "local"], p=[0.15, 0.35, 0.5])),
+            "road_id": road_id,
+            "id": road_id,
+            "geometry": geometry,
+            "road_name": f"Synthetic {road_type.title()} Road {i + 1:02d}",
+            "name": f"Synthetic {road_type.title()} Road {i + 1:02d}",
+            "road_class": road_type,
+            "roadType": road_type,
+            "width": width,
+            "length": length_m,
+            "speedLimit": 45 if road_type == "primary" else 30 if road_type == "secondary" else 20,
+            "drainageNodeIds": [f"DN-{(i % 18) + 1:03d}", f"DN-{((i + 4) % 18) + 1:03d}"],
+            "cctvIds": [f"CAM-{((i % 5) + 1):03d}"] if i in (1, 9, 16, 26, 35) else [],
             "source": "synthetic-demo",
-            "confidence": 0.8,
+            "confidence": 0.9,
         })
     return gpd.GeoDataFrame(rows, geometry="geometry", crs="EPSG:4326")
 

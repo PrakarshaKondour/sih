@@ -1,179 +1,47 @@
-import { useEffect, useMemo, useRef } from "react";
-import { MapContainer, TileLayer, GeoJSON, CircleMarker, Marker, Popup, useMap } from "react-leaflet";
+import { useEffect } from "react";
+import { CircleMarker, GeoJSON, MapContainer, Marker, Polygon, Polyline, TileLayer, Tooltip, useMap } from "react-leaflet";
 import type { LatLngExpression } from "leaflet";
 import L from "leaflet";
 
 export interface LayerData {
   bounds: { min_lon: number; max_lon: number; min_lat: number; max_lat: number };
-  manholes: GeoJSON.FeatureCollection;
-  sewerlines: any;
-  nala: any;
-  roads: any;
-  historical_flood: any;
-  cctv_cameras: { camera_id: string; lat: number; lon: number }[];
+  manholes: any; sewerlines: any; nala: any; roads: any; historical_flood: any;
+  cctv_cameras: { camera_id: string; lat: number; lon: number; road_id: string; location: string; video_url: string }[];
 }
+const roadColor = (d: any) => d.status === "CLOSED" ? "#dc2626" : d.status === "RESTRICTED" ? "#f97316" : "#55667c";
+const nodeColor = (risk: string) => risk === "CRITICAL" ? "#dc2626" : risk === "HIGH" ? "#f97316" : risk === "WARNING" ? "#facc15" : "#22c55e";
+const cameraColor = (state: string) => state === "NORMAL" ? "#22c55e" : state === "LIGHT WATERLOGGING" ? "#eab308" : state === "WATERLOGGING" ? "#f97316" : "#dc2626";
+const floodColor = (risk: string) => risk === "SEVERE" ? "#dc2626" : risk === "HIGH" ? "#f97316" : risk === "MEDIUM" ? "#eab308" : "#38bdf8";
 
-export interface NowcastEntry {
-  node_id: string;
-  forecast: { minute: number; predicted_depth_m: number; risk: string }[];
-  expected_onset_minute: number | null;
-}
-
-const RISK_COLOR: Record<string, string> = {
-  NONE: "#3b4a63",
-  LOW: "#4ade80",
-  MODERATE: "#facc15",
-  HIGH: "#fb923c",
-  CRITICAL: "#ef4444",
-};
-
-const markerIcon = new L.Icon({
-  iconUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png",
-  iconRetinaUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png",
-  shadowUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
-  iconSize: [25, 41],
-  iconAnchor: [12, 41],
-});
-
-function sourceColor(source: string | undefined): string {
-  if (!source) return "#888";
-  if (source.startsWith("real")) return "#38bdf8";
-  if (source.startsWith("inferred")) return "#a78bfa";
-  return "#fb923c";
-}
-
-function FitBounds({ bounds }: { bounds: LayerData["bounds"] | null }) {
+function Fit({ bounds }: { bounds: LayerData["bounds"] | null }) {
   const map = useMap();
-  useEffect(() => {
-    if (!bounds) return;
-    map.fitBounds([[bounds.min_lat, bounds.min_lon], [bounds.max_lat, bounds.max_lon]]);
-  }, [bounds, map]);
+  useEffect(() => { if (bounds) map.fitBounds([[bounds.min_lat, bounds.min_lon], [bounds.max_lat, bounds.max_lon]], { padding: [28, 28] }); }, [bounds, map]);
   return null;
 }
+function Clicker({ enabled, onClick }: { enabled: boolean; onClick: (lat: number, lon: number) => void }) {
+  const map = useMap();
+  useEffect(() => {
+    if (!enabled) return;
+    const cb = (e: any) => onClick(e.latlng.lat, e.latlng.lng);
+    map.on("click", cb);
+    return () => { map.off("click", cb); };
+  }, [map, enabled, onClick]);
+  return null;
+}
+const pin = new L.DivIcon({ className: "route-pin", html: "<span></span>", iconSize: [18, 18], iconAnchor: [9, 9] });
 
-export default function MapView({
-  layers,
-  nowcast,
-  minute,
-  visibleLayers,
-  route,
-  routeClicks,
-  onMapClick,
-}: {
-  layers: LayerData | null;
-  nowcast: NowcastEntry[] | null;
-  minute: number;
-  visibleLayers: Record<string, boolean>;
-  route: { normal: LatLngExpression[]; aware: LatLngExpression[]; atRiskRoadIds: string[]; blockedRoadIds: string[] } | null;
-  routeClicks: { lat: number; lon: number }[];
-  onMapClick: (lat: number, lon: number) => void;
-}) {
-  const center: LatLngExpression = [17.375, 78.47];
-  const nowcastByNode = useMemo(() => {
-    const m: Record<string, NowcastEntry> = {};
-    (nowcast || []).forEach((n) => (m[n.node_id] = n));
-    return m;
-  }, [nowcast]);
-
-  const ClickHandler = () => {
-    const map = useMap();
-    const handlerRef = useRef<any>(null);
-    useEffect(() => {
-      const handler = (e: any) => onMapClick(e.latlng.lat, e.latlng.lng);
-      map.on("click", handler);
-      handlerRef.current = handler;
-      return () => map.off("click", handler);
-    }, [map]);
-    return null;
-  };
-
-  return (
-    <MapContainer center={center} zoom={15} style={{ height: "100%", width: "100%" }}>
-      <TileLayer attribution='&copy; OpenStreetMap contributors' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-      {layers && <FitBounds bounds={layers.bounds} />}
-      <ClickHandler />
-
-      {layers && visibleLayers.roads && (
-        <GeoJSON
-          data={layers.roads}
-          style={(f: any) => {
-            const roadId = f?.properties?.road_id;
-            const blocked = route?.blockedRoadIds.includes(roadId);
-            const atRisk = route?.atRiskRoadIds.includes(roadId);
-            return {
-              color: blocked ? "#ef4444" : atRisk ? "#fb923c" : "#5b6b85",
-              weight: blocked ? 5 : atRisk ? 4 : 2,
-              opacity: blocked || atRisk ? 0.95 : 0.6,
-              dashArray: blocked ? "7 5" : undefined,
-            };
-          }}
-          onEachFeature={(f: any, layer: any) => {
-            const p = f.properties || {};
-            layer.bindTooltip(`${p.road_id || "Road"}${p.road_name ? ` · ${p.road_name}` : ""}`);
-          }}
-        />
-      )}
-
-      {layers && visibleLayers.sewerlines && (
-        <GeoJSON data={layers.sewerlines} style={(f: any) => ({
-          color: sourceColor(f?.properties?.source),
-          weight: 2,
-          dashArray: f?.properties?.source?.startsWith("real") ? undefined : "4 3",
-        })} />
-      )}
-
-      {layers && visibleLayers.nala && (
-        <GeoJSON data={layers.nala} style={(f: any) => ({ color: sourceColor(f?.properties?.source), weight: 4, opacity: 0.8 })} />
-      )}
-
-      {layers && visibleLayers.historical_flood && (
-        <GeoJSON data={layers.historical_flood} style={() => ({ color: "#ef4444", fillColor: "#ef4444", fillOpacity: 0.15, weight: 1, dashArray: "3 3" })} />
-      )}
-
-      {layers && visibleLayers.manholes && layers.manholes.features.map((f: any, i: number) => {
-        const [lon, lat] = f.geometry.coordinates;
-        const nodeId = f.properties.node_id;
-        const nc = nowcastByNode[nodeId];
-        const forecastNow = nc?.forecast.find((x) => x.minute === minute);
-        const risk = forecastNow?.risk || "NONE";
-        const color = visibleLayers.nowcast ? RISK_COLOR[risk] : sourceColor(f.properties.source);
-        return (
-          <CircleMarker key={i} center={[lat, lon]} radius={visibleLayers.nowcast && risk !== "NONE" ? 6 : 3}
-            pathOptions={{ color, fillColor: color, fillOpacity: 0.85, weight: 1 }}>
-            <Popup>
-              <div className="node-popup">
-                <div><b>{nodeId}</b></div>
-                <div>source: {f.properties.source} (confidence {f.properties.confidence})</div>
-                {forecastNow && <div style={{ marginTop: 4 }}>depth @ T+{minute}min: <b>{forecastNow.predicted_depth_m}m</b> <span className={`risk-pill risk-${risk}`}>{risk}</span></div>}
-              </div>
-            </Popup>
-          </CircleMarker>
-        );
-      })}
-
-      {layers && visibleLayers.cctv && layers.cctv_cameras.map((cam, i) => (
-        <CircleMarker key={`cam-${i}`} center={[cam.lat, cam.lon]} radius={7}
-          pathOptions={{ color: "#22d3ee", fillColor: "#22d3ee", fillOpacity: 0.9, weight: 2 }}>
-          <Popup>CCTV camera: {cam.camera_id} (synthetic demo frame)</Popup>
-        </CircleMarker>
-      ))}
-
-      {routeClicks.map((p, i) => (
-        <Marker key={`route-point-${i}`} position={[p.lat, p.lon]} icon={markerIcon}>
-          <Popup>{i === 0 ? "Navigation start" : "Destination"}</Popup>
-        </Marker>
-      ))}
-
-      {route && (
-        <>
-          <GeoJSON data={{ type: "Feature", geometry: { type: "LineString", coordinates: route.normal.map((p: any) => [p[1], p[0]]) }, properties: {} } as any}
-            style={() => ({ color: "#f8fafc", weight: 7, opacity: 0.85 })} />
-          <GeoJSON data={{ type: "Feature", geometry: { type: "LineString", coordinates: route.normal.map((p: any) => [p[1], p[0]]) }, properties: {} } as any}
-            style={() => ({ color: "#64748b", weight: 4, dashArray: "6 7" })} />
-          <GeoJSON data={{ type: "Feature", geometry: { type: "LineString", coordinates: route.aware.map((p: any) => [p[1], p[0]]) }, properties: {} } as any}
-            style={() => ({ color: "#22d3ee", weight: 5 })} />
-        </>
-      )}
-    </MapContainer>
-  );
+export default function MapView({ layers, simulation, visibleLayers, route, routeClicks, selectionMode, onMapClick, onSelect }: any) {
+  const roadLookup = new Map(simulation.roads.map((r: any) => [r.road_id, r]));
+  return <MapContainer center={[17.375, 78.47]} zoom={15} style={{ height: "100%", width: "100%" }}>
+    <TileLayer attribution="&copy; OpenStreetMap" url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+    <Fit bounds={layers?.bounds || null} /><Clicker enabled={selectionMode} onClick={onMapClick} />
+    {layers && visibleLayers.flood && simulation.polygons.map((p: any) => <Polygon key={p.id} positions={p.coordinates.map(([lon, lat]: number[]) => [lat, lon])} pathOptions={{ color: floodColor(p.risk), fillColor: floodColor(p.risk), fillOpacity: .24, weight: 1.5 }} eventHandlers={{ click: () => onSelect("hotspot", p) }}><Tooltip sticky>{p.id} · {p.depth} cm</Tooltip></Polygon>)}
+    {layers && visibleLayers.drainage && <><GeoJSON data={layers.sewerlines} style={() => ({ color: "#06b6d4", weight: 2, opacity: .72, dashArray: "5 4" })} /><GeoJSON data={layers.nala} style={() => ({ color: "#0284c7", weight: 5, opacity: .82 })} /></>}
+    {layers && visibleLayers.roads && <GeoJSON data={layers.roads} style={(f: any) => { const d = roadLookup.get(f.properties.road_id) || f.properties; return { color: roadColor(d), weight: d.width > 12 ? 7 : d.width > 7 ? 4 : 2.3, opacity: .94, dashArray: d.status === "CLOSED" ? "6 5" : undefined }; }} onEachFeature={(f: any, layer: any) => { const d = roadLookup.get(f.properties.road_id) || f.properties; layer.bindTooltip(`${d.road_id} · ${d.depth || 0} cm`, { sticky: true }); layer.on("click", () => onSelect("road", d)); }} />}
+    {layers && visibleLayers.nodes && layers.manholes.features.map((f: any) => { const d = simulation.nodes.find((n: any) => n.node_id === f.properties.node_id) || f.properties; const [lon, lat] = f.geometry.coordinates; return <CircleMarker key={d.node_id} center={[lat, lon]} radius={d.risk === "CRITICAL" ? 7 : 5} pathOptions={{ color: "#fff", weight: 1, fillColor: nodeColor(d.risk), fillOpacity: 1 }} eventHandlers={{ click: () => onSelect("node", d) }}><Tooltip>{d.node_id} · {d.utilization}% utilization</Tooltip></CircleMarker>; })}
+    {layers && visibleLayers.cctv && simulation.cameras.map((d: any) => <CircleMarker key={d.camera_id} center={[d.lat, d.lon]} radius={8} pathOptions={{ color: "#fff", weight: 2, fillColor: cameraColor(d.status), fillOpacity: 1 }} eventHandlers={{ click: () => onSelect("camera", d) }}><Tooltip>{d.camera_id} · {d.status}</Tooltip></CircleMarker>)}
+    {routeClicks.map((p: any, i: number) => <Marker key={i} position={[p.lat, p.lon]} icon={pin}><Tooltip permanent direction="top">{i === 0 ? "START" : "DESTINATION"}</Tooltip></Marker>)}
+    {route?.normal_route?.path && <Polyline positions={route.normal_route.path.map(([lon, lat]: number[]) => [lat, lon] as LatLngExpression)} pathOptions={{ color: "#64748b", weight: 4, dashArray: "7 7" }} />}
+    {route?.flood_aware_route?.path && <Polyline positions={route.flood_aware_route.path.map(([lon, lat]: number[]) => [lat, lon] as LatLngExpression)} pathOptions={{ color: "#16a34a", weight: 5 }} />}
+  </MapContainer>;
 }

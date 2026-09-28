@@ -14,6 +14,7 @@ from app.core.schemas import CatchmentBounds, RiskThresholds
 from app.ingestion import synthetic_catchment as sc
 from app.ingestion import real_data as rd
 import os
+from pathlib import Path
 from app.drainage.graph_builder import build_drainage_graph, add_inferred_edges_from_low_points
 from app.hydrology import dem_processing as dp
 from app.hydrology.runoff import imperviousness_to_cn, runoff_timeseries
@@ -80,7 +81,8 @@ class Catchment:
         height_m = (self.bounds.max_lat - self.bounds.min_lat) * 110_540
         self.cell_area_m2 = (width_m / res) * (height_m / res)
 
-        self.cctv_frames_dir = "/home/claude/hydroloop/data/demo/cctv_frames"
+        # Keep generated synthetic analysis frames project-relative as well.
+        self.cctv_frames_dir = str(Path(__file__).resolve().parents[3] / "data" / "demo" / "cctv_frames")
         self.cctv_frames = generate_demo_frames(self.cctv_frames_dir)
 
         # static per-node ponding-area estimate (contributing area based),
