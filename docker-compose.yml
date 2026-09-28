@@ -6,7 +6,7 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - ./data:/app/data
+      - ./data:/data
     environment:
       # No SMS/IVR credentials set on purpose -- alerts run in MOCK mode.
       # Set these only if you have real provider credentials:
