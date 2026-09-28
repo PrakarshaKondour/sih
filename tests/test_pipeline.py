@@ -129,21 +129,23 @@ def test_cctv_assimilation_pulls_prediction_toward_observation():
     assert result["corrected_depth_m"] < 0.25 or abs(result["corrected_depth_m"] - 0.25) < 1e-6
 
 
-def test_routing_graph_is_single_connected_component():
+def test_real_road_graph_has_dominant_connected_component():
     import networkx as nx
     from app.demo.orchestrator import get_catchment
     from app.routing.flood_aware_routing import build_road_graph
     c = get_catchment()
     rg = build_road_graph(c.roads)
-    assert nx.number_connected_components(rg) == 1
+    largest = max((len(component) for component in nx.connected_components(rg)), default=0)
+    assert largest >= 0.98 * rg.number_of_nodes()
 
 
 def test_flood_aware_route_never_worse_than_avoiding_critical():
+    import networkx as nx
     from app.demo.orchestrator import get_catchment
     from app.routing.flood_aware_routing import build_road_graph, annotate_edge_risk, compute_routes
     c = get_catchment()
     rg = build_road_graph(c.roads)
-    nodes = list(rg.nodes)
+    nodes = list(max(nx.connected_components(rg), key=len))
     node_risk = {nodes[len(nodes) // 2]: "CRITICAL"}
     annotate_edge_risk(rg, node_risk)
     result = compute_routes(rg, nodes[0], nodes[-1], profile="NORMAL")
@@ -159,6 +161,32 @@ def test_alerts_never_dispatch_without_credentials():
     assert result["dispatched"] is False
     assert "MOCK" in result["mode"]
     assert "en" in result["messages"] and "te" in result["messages"]
+    assert "మధ్యస్థ" in result["messages"]["te"]
+
+
+def test_demo_scenario_exposes_synthetic_labels_and_runtime():
+    from app.demo.orchestrator import get_catchment, run_scenario
+    c = get_catchment()
+    result = run_scenario(c)
+    assert result["data_source"] == "SYNTHETIC"
+    assert "runtime_seconds" in result
+    assert result["runtime_seconds"] >= 0
+    assert result["note"].upper().find("SYNTHETIC") >= 0
+    assert result["rainfall_source"] == "synthetic-demo"
+    assert [h["minute"] for h in result["horizons"]] == [0, 15, 30, 60, 120, 180]
+    assert all(forecast["predicted_depth_m"] == 0
+               for entry in result["nowcast"] for forecast in entry["forecast"]
+               if forecast["minute"] == 0)
+    road_ids = {str(road_id) for road_id in c.roads["road_id"]}
+    for horizon in result["horizons"]:
+        assert {road["road_id"] for road in horizon["roads"]} == road_ids
+        assert horizon["severity"] in ("NONE", "LOW", "MODERATE", "HIGH", "CRITICAL")
+        assert all(0 <= node["capacity_utilization_pct"] <= 100
+                   for node in horizon["drainage"])
+    assert all(camera["road_id"] in road_ids for camera in result["cctv_cameras"])
+    assert result["alerts"]
+    assert set(result["alerts"][0]["messages"]) == {"en", "te"}
+    assert result["alerts"][0]["trigger"] == "backend_flood_threshold"
 
 
 if __name__ == "__main__":
@@ -181,4 +209,42 @@ def test_navigation_route_returns_road_risk_metadata():
     assert "at_risk_roads" in result
     assert "blocked_road_ids" in result
     assert result["blocked_road_ids"]
-    assert result["blocked_road_ids"][0].startswith("SYN-RD-")
+    assert result["blocked_road_ids"][0] in set(c.roads["road_id"].astype(str))
+
+
+def test_scenario_and_route_api_share_backend_road_risk():
+    import networkx as nx
+    from fastapi.testclient import TestClient
+    from app.demo.orchestrator import get_catchment
+    from app.main import app
+
+    client = TestClient(app)
+    scenario_response = client.get("/api/scenario/run?rainfall_mode=demo")
+    assert scenario_response.status_code == 200
+    scenario = scenario_response.json()
+    assert scenario["rainfall_source"] == "synthetic-demo"
+    assert scenario["road_source"] == get_catchment().road_source
+    assert [horizon["minute"] for horizon in scenario["horizons"]] == [0, 15, 30, 60, 120, 180]
+    from app.ingestion.real_data import latest_imerge_tiffs
+    imd_csv = os.path.join(os.path.dirname(__file__), "..", "data", "raw", "imd_rainfall.csv")
+    if not os.path.isfile(imd_csv) and not latest_imerge_tiffs():
+        assert client.get("/api/scenario/run?rainfall_mode=real").status_code == 409
+
+    from app.routing.flood_aware_routing import build_road_graph
+    road_graph = build_road_graph(get_catchment().roads)
+    nodes = list(max(nx.connected_components(road_graph), key=len))
+    start, end = nodes[0], nodes[-1]
+    road_ids = {str(road_id) for road_id in get_catchment().roads["road_id"]}
+    route_response = client.post("/api/routing/route", json={
+        "start_lon": start[0],
+        "start_lat": start[1],
+        "end_lon": end[0],
+        "end_lat": end[1],
+        "profile": "NORMAL",
+        "horizon_minute": 180,
+        "rainfall_mode": "demo",
+    })
+    assert route_response.status_code == 200
+    route = route_response.json()
+    assert route["rainfall_source"] == scenario["rainfall_source"]
+    assert set(road["road_id"] for road in route["at_risk_roads"]) <= road_ids

@@ -4,6 +4,7 @@ from pathlib import Path
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel
 from starlette.responses import FileResponse, StreamingResponse
+from shapely.geometry import mapping
 import os
 
 from app.demo.orchestrator import get_catchment, run_scenario, run_historical_replay
@@ -83,16 +84,32 @@ def _node_geojson(catchment) -> dict:
         inbound = [str(u) for u, _v in catchment.graph.in_edges(node_id)]
         outbound = [str(v) for _u, v in catchment.graph.out_edges(node_id)]
         index = len(features) + 1
+        inferred = str(attrs.get("source", "")).startswith("inferred:")
         features.append({
             "type": "Feature",
             "geometry": {"type": "Point", "coordinates": [lon, lat]},
             "properties": {"node_id": node_id, "kind": attrs.get("kind"),
                              "source": attrs.get("source"), "confidence": attrs.get("confidence"),
-                             "label": f"Synthetic Catchment Zone {(index % 4) + 1}",
-                             "upstream": inbound, "downstream": outbound[0] if outbound else "NALA-OUTFALL",
-                             "connected_roads": [f"R-{((index * 3) % 50) + 1:03d}", f"R-{((index * 3 + 7) % 50) + 1:03d}"],
-                             "capacity": 58 + (index * 7) % 38,
-                             "blockage": 8 + (index * 9) % 42},
+                             "label": f"{('Inferred' if inferred else 'Catchment')} node {index:03d}",
+                             "upstream": inbound, "downstream": outbound[0] if outbound else None},
+        })
+    return {"type": "FeatureCollection", "features": features}
+
+
+def _inferred_flowpaths_geojson(catchment) -> dict:
+    features = []
+    for source, target, attrs in catchment.graph.edges(data=True):
+        if not str(attrs.get("source", "")).startswith("inferred:"):
+            continue
+        geometry = attrs.get("geometry")
+        if geometry is None:
+            continue
+        features.append({
+            "type": "Feature",
+            "geometry": mapping(geometry),
+            "properties": {"from_node": str(source), "to_node": str(target),
+                           "source": attrs.get("source"), "confidence": attrs.get("confidence"),
+                           "edge_kind": attrs.get("edge_kind")},
         })
     return {"type": "FeatureCollection", "features": features}
 
@@ -109,18 +126,15 @@ def get_layers():
     c = get_catchment()
     return {
         "bounds": c.bounds.__dict__,
+        "sources": {"roads": c.road_source, "drainage": c.drainage_source,
+                "dem": c.dem_source},
         "manholes": _node_geojson(c),
         "sewerlines": _edge_geojson(c.sewerlines, "piped_sewer"),
         "nala": _edge_geojson(c.nala, "open_nala"),
+        "inferred_flowpaths": _inferred_flowpaths_geojson(c),
         "roads": _edge_geojson(c.roads, "roads"),
         "historical_flood": _edge_geojson(c.historical_flood, "historical_inundation"),
-        "cctv_cameras": [
-            {"camera_id": "CAM-001", "lat": 17.3694, "lon": 78.4589, "road_id": "R-002", "location": "Northwest gateway", "video_url": "/api/cctv/CAM-001/video"},
-            {"camera_id": "CAM-002", "lat": 17.3731, "lon": 78.4612, "road_id": "R-010", "location": "Collector junction", "video_url": "/api/cctv/CAM-002/video"},
-            {"camera_id": "CAM-003", "lat": 17.3741, "lon": 78.4697, "road_id": "R-017", "location": "Central drainage crossing", "video_url": "/api/cctv/CAM-003/video"},
-            {"camera_id": "CAM-004", "lat": 17.3758, "lon": 78.4750, "road_id": "R-027", "location": "Eastern low point", "video_url": "/api/cctv/CAM-004/video"},
-            {"camera_id": "CAM-005", "lat": 17.3717, "lon": 78.4790, "road_id": "R-036", "location": "Nala outfall approach", "video_url": "/api/cctv/CAM-005/video"},
-        ],
+        "cctv_cameras": [],
     }
 
 
@@ -133,9 +147,15 @@ def get_dem():
 
 
 @router.get("/scenario/run")
-def scenario_run():
+def scenario_run(rainfall_mode: str | None = None):
     c = get_catchment()
-    return run_scenario(c)
+    rainfall_mode = rainfall_mode or os.getenv("HYDROLOOP_RAINFALL_MODE", "demo")
+    if rainfall_mode not in ("real", "demo"):
+        raise HTTPException(status_code=400, detail="rainfall_mode must be 'real' or 'demo'")
+    try:
+        return run_scenario(c, rainfall_mode=rainfall_mode)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.get("/scenario/historical-replay")
@@ -151,12 +171,13 @@ class RouteRequest(BaseModel):
     end_lat: float
     profile: str = "NORMAL"
     horizon_minute: int = 60
+    rainfall_mode: str | None = None
 
 
 @router.post("/routing/route")
 def route(req: RouteRequest):
     c = get_catchment()
-    road_graph = build_road_graph(c.roads)
+    road_graph = c.road_graph.copy()
 
     def nearest_node(lon, lat):
         return min(road_graph.nodes, key=lambda n: (n[0] - lon) ** 2 + (n[1] - lat) ** 2)
@@ -167,10 +188,15 @@ def route(req: RouteRequest):
     if req.horizon_minute not in (0, 15, 30, 60, 120, 180):
         raise HTTPException(status_code=400, detail="horizon_minute must be one of 0, 15, 30, 60, 120, 180")
 
-    # The current demo scenario is synthetic, but the routing contract is
-    # intentionally data-source agnostic. Once real rainfall/DEM/road data
-    # is loaded by the catchment adapter, this same endpoint can consume it.
-    scenario = run_scenario(c)
+    # Road risk comes from the same selected backend scenario product used by
+    # the dashboard; road IDs remain those of the active catchment layer.
+    rainfall_mode = req.rainfall_mode or os.getenv("HYDROLOOP_RAINFALL_MODE", "demo")
+    if rainfall_mode not in ("real", "demo"):
+        raise HTTPException(status_code=400, detail="rainfall_mode must be 'real' or 'demo'")
+    try:
+        scenario = run_scenario(c, rainfall_mode=rainfall_mode, dispatch_notifications=False)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     node_risk = {}
     for entry in scenario["nowcast"]:
         node_id = entry["node_id"]
@@ -188,6 +214,10 @@ def route(req: RouteRequest):
     # Keep the spatial association tight: a flood-model node should only
     # affect nearby road segments, not the entire surrounding grid.
     annotate_edge_risk(road_graph, node_risk, risk_radius_deg=0.0005)
+    selected_horizon = next(h for h in scenario["horizons"] if h["minute"] == req.horizon_minute)
+    risk_by_road = {road["road_id"]: road["risk"] for road in selected_horizon["roads"]}
+    for _u, _v, attrs in road_graph.edges(data=True):
+        attrs["risk"] = risk_by_road.get(str(attrs["road_id"]), attrs.get("risk", "NONE"))
     result = compute_routes(road_graph, start, end, profile=req.profile)
     if "error" in result:
         raise HTTPException(status_code=404, detail=result["error"])
@@ -197,16 +227,14 @@ def route(req: RouteRequest):
     result["selected_start"] = {"node": [start[0], start[1]], "lat": start[1], "lon": start[0]}
     result["selected_end"] = {"node": [end[0], end[1]], "lat": end[1], "lon": end[0]}
     result["data_status"] = c.data_mode
-    if c.data_mode == "real":
-        result["data_note"] = (
-            "REAL road network + REAL DEM are active. "
-            "Drainage/rainfall calibration still requires verified real layers."
-        )
-    else:
-        result["data_note"] = (
-            "Synthetic demo mode. Set HYDROLOOP_DATA_MODE=real only after "
-            "real DEM and road files have been downloaded and verified."
-        )
+    result["rainfall_source"] = scenario["rainfall_source"]
+    result["road_source"] = c.road_source
+    result["dem_source"] = c.dem_source
+    result["drainage_source"] = c.drainage_source
+    result["data_note"] = (
+        f"Roads: {c.road_source}; DEM: {c.dem_source}; "
+        f"drainage: {c.drainage_source}; rainfall: {scenario['rainfall_source']}."
+    )
     return result
 
 
@@ -233,3 +261,10 @@ def health():
 def data_status():
     from app.ingestion.real_data import data_status as _status
     return _status()
+
+
+
+
+
+
+

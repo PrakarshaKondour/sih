@@ -13,6 +13,7 @@ from __future__ import annotations
 import networkx as nx
 import geopandas as gpd
 import numpy as np
+from shapely.geometry import LineString
 
 
 def build_drainage_graph(manholes: gpd.GeoDataFrame, sewerlines: gpd.GeoDataFrame,
@@ -90,8 +91,12 @@ def add_inferred_edges_from_low_points(g: nx.DiGraph, low_points_lonlat: list[tu
         g.add_node(new_node, kind="inferred_low_point", geometry=(lon, lat),
                     source="inferred:dem", confidence=0.35)
         if nearest_d <= max_link_deg:
+            nearest_geom = g.nodes[nearest].get("geometry")
+            nearest_lonlat = ((nearest_geom.x, nearest_geom.y)
+                              if hasattr(nearest_geom, "x") else nearest_geom)
             g.add_edge(new_node, nearest, edge_kind="inferred_flowpath",
                         source="inferred:dem", confidence=0.3,
+                        geometry=LineString([(lon, lat), nearest_lonlat]),
                         length_m=nearest_d * 111_000, diameter_mm=np.nan)
             added.append((new_node, nearest))
     return added

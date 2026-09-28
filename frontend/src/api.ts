@@ -5,8 +5,14 @@ export async function getLayers() {
   return r.json();
 }
 
-export async function runScenario() {
-  const r = await fetch(`${BASE}/scenario/run`);
+export async function runScenario(rainfallMode: "real" | "demo" = "demo") {
+  const r = await fetch(`${BASE}/scenario/run?rainfall_mode=${rainfallMode}`);
+  if (!r.ok) throw new Error((await r.json()).detail || "Could not run flood scenario");
+  return r.json();
+}
+
+export async function getDataStatus() {
+  const r = await fetch(`${BASE}/data/status`);
   return r.json();
 }
 
@@ -22,6 +28,7 @@ export interface RouteRequest {
   end_lat: number;
   profile: "NORMAL" | "AMBULANCE" | "FIRE";
   horizon_minute: number;
+  rainfall_mode: "real" | "demo";
 }
 
 export async function computeRoute(req: RouteRequest) {

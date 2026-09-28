@@ -15,6 +15,18 @@ Copernicus also provides global GLO-90 coverage.
 
 ## 2. Get the real Hyderabad road network
 
+For the small demo catchment, use the bounded OSM map endpoint:
+
+```powershell
+python scripts/fetch_real_data.py --osm-roads
+```
+
+It keeps drivable road classes and writes `source=real:osm`, way IDs, and
+OpenStreetMap attribution to `data/raw/hyderabad_roads.geojson`. It refuses
+to overwrite an existing file unless `--force` is supplied.
+
+Alternatively, fetch a verified TGRAC layer as described below.
+
 Run:
 
 ```bat
@@ -83,20 +95,34 @@ Then restart:
 uvicorn app.main:app --reload --port 8000
 ```
 
-The dashboard should show:
-
-```text
-REAL DATA MODE
-REAL roads + REAL DEM
-```
-
 If a required real file is missing, the backend fails clearly instead of
 silently using synthetic data.
+
+Rainfall mode is configured separately because real rainfall observations
+do not imply that roads, DEM, or drainage are real. Select **Real
+observations** in the dashboard or set:
+
+```powershell
+$env:HYDROLOOP_RAINFALL_MODE="real"
+```
+
+The rainfall endpoint and dashboard use IMERG GeoTIFFs first, then the
+catchment-filtered IMD CSV. With no usable input, the API returns an explicit
+unavailable-data error; it does not substitute demo rainfall in real mode.
 
 ## Current boundary
 
 Real roads and real DEM are supported in strict mode.
 
 The drainage network, land-cover raster, historical inundation labels and
-scenario rainfall still need their own verified real inputs. They are not
-silently relabeled as real.
+CCTV feeds remain synthetic in this prototype. DEM-derived drainage links
+are labeled INFERRED. Use the dashboard's explicit demo-rainfall selection
+for the synthetic fallback.
+
+## Optional alert webhook
+
+Set `HYDROLOOP_ALERT_WEBHOOK_URL` to a receiver that accepts JSON POSTs.
+When the backend forecast crosses the HIGH flood threshold, it sends one
+payload with English and Telugu message strings plus severity and horizon.
+Without a URL, the alert is displayed in the dashboard and marked MOCK; no
+SMS/IVR provider integration is included.

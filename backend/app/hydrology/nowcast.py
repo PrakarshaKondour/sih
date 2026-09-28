@@ -27,14 +27,16 @@ def interpolate_depth_series(timestep_log: list[dict], timestep_minutes: int = 6
         node_ids.update(entry["depths_m"].keys())
 
     series_by_node = {n: [] for n in node_ids}
-    times_min = [entry["t_index"] * timestep_minutes for entry in timestep_log]
+    times_min = [0] + [
+        (entry["t_index"] + 1) * timestep_minutes for entry in timestep_log
+    ]
     for entry in timestep_log:
         for n in node_ids:
             series_by_node[n].append(entry["depths_m"].get(n, 0.0))
 
     result = {}
     for n in node_ids:
-        ys = series_by_node[n]
+        ys = [0.0] + series_by_node[n]
         xs = times_min
         interp = {}
         for m in NOWCAST_MINUTES:
@@ -46,7 +48,8 @@ def interpolate_depth_series(timestep_log: list[dict], timestep_minutes: int = 6
     return result
 
 
-def build_nowcast_response(node_depth_series: dict, thresholds: RiskThresholds | None = None) -> list[dict]:
+def build_nowcast_response(node_depth_series: dict, thresholds: RiskThresholds | None = None,
+                           node_utilization_series: dict | None = None) -> list[dict]:
     thresholds = thresholds or RiskThresholds()
     out = []
     for node_id, minute_depths in node_depth_series.items():
@@ -60,6 +63,10 @@ def build_nowcast_response(node_depth_series: dict, thresholds: RiskThresholds |
             forecast.append({
                 "minute": m, "predicted_depth_m": round(depth, 3), "risk": risk,
                 "confidence": _confidence_for_horizon(m),
+                "capacity_utilization_pct": (
+                    round(node_utilization_series.get(node_id, {}).get(m, 0.0), 1)
+                    if node_utilization_series else None
+                ),
             })
         out.append({
             "node_id": node_id,

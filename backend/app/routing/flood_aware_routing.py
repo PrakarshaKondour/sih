@@ -31,33 +31,38 @@ def build_road_graph(roads: gpd.GeoDataFrame) -> nx.Graph:
 
     Road features are independent LineStrings (as a real roads layer would
     give you) with no shared vertices at intersections, so this explicitly
-    computes pairwise intersections between road lines and inserts them as
-    graph nodes before adding edges -- otherwise every road would form its
-    own disconnected component and routing would trivially fail."""
+    uses a spatial index to find intersecting road lines and inserts those
+    intersections as graph nodes before adding edges."""
     from shapely.geometry import Point as _Point
-    from shapely.ops import unary_union, linemerge
+    from shapely.strtree import STRtree
 
     lines = list(roads.geometry)
     road_ids = list(roads["road_id"])
     road_classes = list(roads["road_class"])
+    tree = STRtree(lines)
+    cut_points_by_line = [list(line.coords) for line in lines]
+
+    def intersection_points(geometry):
+        if geometry.geom_type == "Point":
+            return [tuple(geometry.coords[0])]
+        if geometry.geom_type in ("LineString", "LinearRing"):
+            return [tuple(geometry.coords[0]), tuple(geometry.coords[-1])]
+        if hasattr(geometry, "geoms"):
+            return [point for part in geometry.geoms for point in intersection_points(part)]
+        return []
+
+    for i, line_i in enumerate(lines):
+        for j in tree.query(line_i, predicate="intersects"):
+            j = int(j)
+            if j <= i:
+                continue
+            points = intersection_points(line_i.intersection(lines[j]))
+            cut_points_by_line[i].extend(points)
+            cut_points_by_line[j].extend(points)
 
     g = nx.Graph()
     for i, line_i in enumerate(lines):
-        # collect all points along this line where it should be split:
-        # its own endpoints + every intersection with another road line
-        cut_points = list(line_i.coords)
-        for j, line_j in enumerate(lines):
-            if i == j:
-                continue
-            if line_i.intersects(line_j):
-                inter = line_i.intersection(line_j)
-                if inter.is_empty:
-                    continue
-                pts = [inter] if inter.geom_type == "Point" else list(getattr(inter, "geoms", []))
-                for p in pts:
-                    if hasattr(p, "x"):
-                        cut_points.append((p.x, p.y))
-        # order the cut points along the line by projected distance, dedupe
+        cut_points = cut_points_by_line[i]
         cut_points = sorted(set(cut_points), key=lambda p: line_i.project(_Point(p)))
         for a, b in zip(cut_points[:-1], cut_points[1:]):
             if a == b:
@@ -79,15 +84,21 @@ def annotate_edge_risk(g: nx.Graph, node_risk_lookup: dict, risk_radius_deg: flo
     """node_risk_lookup: {(lon,lat): risk_str} for flood-model nodes.
     For each road edge, find the max risk among nearby flood nodes and
     store it as edge attribute 'risk'."""
-    risk_points = list(node_risk_lookup.items())
+    from shapely.strtree import STRtree
+
     rank = {"NONE": 0, "LOW": 1, "MODERATE": 2, "HIGH": 3, "CRITICAL": 4}
+    risk_locations = list(node_risk_lookup)
+    risk_geometries = [Point(lon, lat) for lon, lat in risk_locations]
+    risk_values = [node_risk_lookup[location] for location in risk_locations]
+    risk_tree = STRtree(risk_geometries) if risk_geometries else None
     for u, v, data in g.edges(data=True):
         edge_line = LineString([u, v])
         worst = "NONE"
         worst_rank = 0
-        for (lon, lat), risk in risk_points:
-            d = edge_line.distance(Point(lon, lat))
-            if d <= risk_radius_deg and rank.get(risk, 0) > worst_rank:
+        candidates = risk_tree.query(edge_line.buffer(risk_radius_deg)) if risk_tree else []
+        for index in candidates:
+            risk = risk_values[int(index)]
+            if rank.get(risk, 0) > worst_rank:
                 worst, worst_rank = risk, rank.get(risk, 0)
         data["risk"] = worst
 

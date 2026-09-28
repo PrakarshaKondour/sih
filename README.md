@@ -4,20 +4,19 @@ Urban Flood Nowcasting System (Drainage and Rainfall Coupling) — prototype
 for SIH PS 26085.
 
 **Read `data_inventory.md` and `docs/limitations.md` before treating any
-number this produces as ground truth.** This prototype runs on
-schema-matched **synthetic demo data** by default (real TGRAC/IMD/DEM
-adapters are implemented but couldn't be executed from the sandbox this
-was built in — see below). Every layer the API and map serve is tagged
-`source: real:*` / `synthetic-demo` / `inferred:*` so you always know
-which is which.
+number this produces as ground truth.** This checkout includes a bounded
+OpenStreetMap road extract for the demo catchment. Rainfall defaults to the
+explicit synthetic demo; drainage, DEM, land cover, and CCTV samples are
+synthetic. DEM-derived links are tagged **INFERRED**. Real IMERG/IMD rainfall
+can be selected when its input files are supplied.
 
 ## What this is
 
-Rainfall → SCS-CN runoff → DEM flow routing → real-schema drainage graph
-(manholes/sewer/nala) → Manning's-equation capacity → 0–3h flood nowcast →
-CCTV-based data assimilation → flood-aware routing → mock multilingual
-alerts, plus inverse capacity calibration against a historical event
-(13 Oct 2020 Hyderabad floods) via `scipy.optimize`.
+Rainfall → SCS-CN runoff → DEM flow routing → drainage graph →
+Manning's-equation capacity → backend-owned 0–3h flood/road-risk nowcast →
+sample CCTV verification → flood-aware routing → bilingual threshold alert.
+The dashboard displays backend scenario outputs; it does not calculate a
+second flood state.
 
 ## 1. Exact setup commands
 
@@ -44,71 +43,45 @@ npm run dev
 # open http://localhost:5173 (vite dev server proxies /api -> localhost:8000)
 ```
 
-## 2. Exact command to run the demo
-With the backend running (either option above):
-- Open http://localhost:5173 (or http://localhost:80 if using Docker) and
-  click **"Run Flood Scenario"** or **"Historical Event Replay"** in the
-  left panel.
-- Or hit the API directly:
-  ```bash
-  curl http://localhost:8000/api/scenario/run
-  curl http://localhost:8000/api/scenario/historical-replay
-  ```
-- Or run the progressive experiment ladder (spec section 13) from the CLI,
-  no server needed:
-  ```bash
-  cd hydroloop/backend
-  python3 ../scripts/run_experiments.py
-  ```
-- Run the test suite:
-  ```bash
-  cd hydroloop
-  python3 -m pytest tests/ -v   # 14/14 passing as of this build
-  ```
+## 2. Run the demo
+With Docker running, open http://localhost:5173 and choose **Demo rainfall**.
+The initial backend scenario loads automatically. Choose **Real observations**
+when IMERG GeoTIFFs or a catchment IMD CSV are present.
 
-## 3. Data inventory
-See `data_inventory.md` — full per-layer table of source, format, CRS,
-fields, and **real vs. synthetic** status. Short version: the TGRAC
-ArcGIS / IMD NetCDF adapters are written and will work with real network
-access (`backend/app/ingestion/tgrac_client.py`), but this sandbox
-couldn't reach `tgrac.telangana.gov.in` / `imdpune.gov.in`, so the running
-demo uses `backend/app/ingestion/synthetic_catchment.py`, which generates
-schema-matched synthetic data on real Hyderabad geography. Run
-`scripts/fetch_real_data.sh` on a machine with internet access to attempt
-the real pull.
+The backend also exposes:
 
-## 4. What is real vs. synthetic
-- **Real:** the Hyderabad location/terrain gradient used, the 13 Oct 2020
-  flood event's date and reported rainfall totals (192mm GHMC average /
-  324.5mm peak, sourced — see `docs/historical_event_13oct2020.md`), every
-  engineering formula (SCS-CN, Manning's, D8 flow routing), and the
-  TGRAC/IMD adapter code paths (untested live, see above).
-- **Synthetic:** the entire drainage network, roads, historical-flood
-  ground-truth polygons, DEM, land cover, and CCTV frames — all schema-
-  matched to what real TGRAC/IMD/SRTM data would look like, all tagged
-  `source="synthetic-demo"` in the API/map.
+```text
+GET /api/scenario/run?rainfall_mode=demo
+GET /api/scenario/run?rainfall_mode=real
+GET /api/catchment/layers
+POST /api/routing/route
+```
 
-## 5. What's implemented vs. approximate
-**Implemented and tested** (14 automated tests, `tests/test_pipeline.py`):
-SCS-CN runoff, D8 flow direction/accumulation/sink-fill, Manning's-equation
-pipe & trapezoidal-channel capacity, drainage-graph construction with
-spatial snapping + DEM-inferred low-point edges, mass-balance flood
-simulation, 0/15/30/60/120/180-min nowcast with configurable risk levels,
-inverse capacity calibration via `scipy.optimize` (Nelder-Mead) with
-before/after metrics, a second-event holdout-transfer check, a heuristic
-CCTV flood detector + confidence-weighted assimilation, flood-aware
-routing (NORMAL/AMBULANCE/FIRE profiles) on an intersection-aware road
-graph, and a mock bilingual (English/Telugu) alert service that never
-dispatches without real provider credentials.
+## 3. Data provenance
+The active road layer is a real OSM extract (`source=real:osm`) limited to
+the small Hyderabad catchment; © OpenStreetMap contributors, ODbL. Real
+TGRAC roads can replace it. Rainfall remains synthetic in this checkout
+because there are no IMERG/IMD observation files. Drainage, DEM, land cover,
+historical flood labels, and CCTV are synthetic. DEM-derived drainage links
+are **INFERRED**, not real nala observations. See `data_inventory.md` and
+`REAL_DATA_SETUP.md` for details and acquisition steps.
 
-**Approximate / simplified** — full list with reasoning in
-`docs/limitations.md`: no full St. Venant hydraulics (auditable
-mass-balance routing instead), cell→nearest-node runoff assignment instead
-of full flow-path routing, ponding depth from an assumed
-contributing-area fraction rather than surveyed depression storage,
-free-draining boundary at catchment exits (no river backwater), one
-capacity-multiplier parameter per edge *type* rather than per edge, and a
-hand-written (not trained) CCTV heuristic.
+## 4. Backend-owned outputs
+Rainfall enters the SCS-CN runoff and drainage simulation once. Backend
+outputs provide the T+0/T+15/T+30/T+60/T+120/T+180 flood depths, hotspots,
+drainage utilization, severity, and per-road risk. Routing consumes those
+same road IDs and risks. Sample CCTV detections are linked to their nearest
+road and can raise its risk. HIGH/CRITICAL forecast thresholds create
+English and Telugu alerts; an optional `HYDROLOOP_ALERT_WEBHOOK_URL` sends
+them via a simple JSON POST. SMS/IVR are not implemented.
+
+## 5. Validation and limitations
+Run the suite with `python -m pytest tests -v`; the current suite checks
+runoff, drainage, nowcast, CCTV, API routing, and bilingual alert contracts.
+The hydraulic core is a mass-balance approximation, runoff is assigned to
+nearest drainage nodes, 15/30-minute states are interpolated, and CCTV is
+an untrained heuristic. Forecast skill is not validated against verified
+local flood depths; see `docs/limitations.md`.
 
 ## 6. Actual evaluation results
 `docs/experiment_results.md` (raw numbers in `docs/experiment_results.json`,
@@ -130,8 +103,8 @@ intensity the classification outcome is largely capacity-insensitive — see
 milder-rainfall case where calibration visibly improves F1 (0.269→0.312).
 
 ## 7. Remaining limitations
-Full list in `docs/limitations.md`. Headline items: real data sources
-haven't been fetched live yet (network-restricted build environment), only
+Full list in `docs/limitations.md`. Headline items: rainfall, drainage,
+DEM, and land cover are synthetic in this checkout; only
 one real-referenced historical event exists for calibration (no true
 multi-event holdout), the CCTV detector is an untrained heuristic, and the
 hydraulic core is a mass-balance approximation rather than a full solver.
@@ -177,7 +150,7 @@ hydroloop/
   frontend/src/      React + TypeScript + Leaflet dashboard
   data/demo/         synthetic CCTV frames generated at startup
   scripts/           real-data fetch helpers, experiment runner
-  tests/             pytest suite (14 tests)
+  tests/             pytest suite
   docs/              historical event sourcing, limitations, experiment results
   data_inventory.md  full data provenance table
 ```
@@ -195,4 +168,7 @@ The dashboard now supports a navigation workflow on top of the existing flood-aw
 7. CRITICAL roads are treated as effectively impassable by the routing cost and are exposed as `blocked_road_ids`.
 8. The map highlights at-risk roads and shows the normal route and flood-aware alternate route separately.
 
-The current catchment remains the repository's clearly-labelled `synthetic-demo` road/drainage/DEM data. The TGRAC/DEM adapter paths remain separate so verified real datasets can be plugged into the same contracts later. Do not describe the current synthetic road/flood layer as live navigation or observed flooding.
+Road routing uses the bounded OSM road extract in this checkout and the
+backend-computed risk for each OSM way ID. Sample CCTV detections are
+explicitly labeled and can raise the associated road's risk. These are
+prototype results, not live traffic or a validated public warning.

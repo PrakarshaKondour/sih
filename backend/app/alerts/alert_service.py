@@ -11,6 +11,7 @@ from dataclasses import dataclass
 
 SMS_CONFIGURED = bool(os.environ.get("SMS_PROVIDER_API_KEY"))
 IVR_CONFIGURED = bool(os.environ.get("IVR_PROVIDER_API_KEY"))
+WEBHOOK_URL = os.environ.get("HYDROLOOP_ALERT_WEBHOOK_URL")
 
 
 @dataclass
@@ -30,18 +31,44 @@ TEMPLATES = {
            "నిమిషాల్లో {severity} స్థాయి వరద ప్రమాదం (లోతు ~{expected_depth_m}మీ). "
            "ఆ ప్రాంతాన్ని నివారించండి. ప్రత్యామ్నాయ మార్గం: {alt_route_summary}."),
 }
+TELUGU_SEVERITY = {
+    "LOW": "తక్కువ",
+    "MODERATE": "మధ్యస్థ",
+    "HIGH": "అధిక",
+    "CRITICAL": "తీవ్ర",
+}
 
 
 def render_alert(content: AlertContent, lang: str = "en") -> str:
     template = TEMPLATES.get(lang, TEMPLATES["en"])
-    return template.format(**content.__dict__)
+    values = content.__dict__.copy()
+    if lang == "te":
+        values["severity"] = TELUGU_SEVERITY.get(content.severity.upper(), content.severity)
+    return template.format(**values)
 
 
 def dispatch_alert(content: AlertContent, channel: str = "sms", langs: tuple[str, ...] = ("en", "te")) -> dict:
-    """Returns a dict describing what WOULD be sent, and whether it was
-    actually dispatched (only true if real provider credentials are
-    configured -- they are not, in this demo)."""
+    """Render bilingual alerts and optionally POST them to a prototype webhook."""
     messages = {lang: render_alert(content, lang) for lang in langs}
+    if channel == "webhook":
+        if not WEBHOOK_URL:
+            return {"channel": channel, "messages": messages, "dispatched": False,
+                    "mode": "MOCK (no webhook configured)"}
+        try:
+            import requests
+            response = requests.post(
+                WEBHOOK_URL,
+                json={"messages": messages, "locality": content.locality,
+                      "severity": content.severity,
+                      "expected_time_minute": content.expected_time_minute},
+                timeout=5,
+            )
+            response.raise_for_status()
+            return {"channel": channel, "messages": messages, "dispatched": True,
+                    "mode": "WEBHOOK", "status_code": response.status_code}
+        except Exception as exc:
+            return {"channel": channel, "messages": messages, "dispatched": False,
+                    "mode": "WEBHOOK_FAILED", "error": str(exc)}
     configured = SMS_CONFIGURED if channel == "sms" else IVR_CONFIGURED
     return {
         "channel": channel,

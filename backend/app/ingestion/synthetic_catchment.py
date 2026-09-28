@@ -232,7 +232,7 @@ def generate_roads(bounds: CatchmentBounds, n: int = 50) -> gpd.GeoDataFrame:
         width = 14 if road_type == "primary" else 9 if road_type == "secondary" else 5.5
         geometry = LineString([point(x, y) for x, y in path])
         length_m = round(float(geometry.length * 111_000), 1)
-        road_id = f"R-{i + 1:03d}"
+        road_id = f"SYN-RD-{i + 1:03d}"
         rows.append({
             "road_id": road_id,
             "id": road_id,

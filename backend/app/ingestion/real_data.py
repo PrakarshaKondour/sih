@@ -16,6 +16,7 @@ TGRAC download/probing remains available through scripts/fetch_real_data.py.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -26,8 +27,10 @@ from rasterio.mask import mask
 from shapely.geometry import box
 
 
-ROOT = Path(__file__).resolve().parents[3]
-RAW = ROOT / "data" / "raw"
+DATA_DIR = Path(os.environ.get(
+    "HYDROLOOP_DATA_DIR", Path(__file__).resolve().parents[3] / "data"
+))
+RAW = DATA_DIR / "raw"
 
 
 def _require(path: Path, label: str) -> Path:
@@ -111,7 +114,8 @@ def load_roads(bounds) -> gpd.GeoDataFrame:
     if "road_class" not in roads.columns:
         roads["road_class"] = "unknown"
 
-    roads["source"] = "real:road-network"
+    if "source" not in roads or not roads["source"].astype(str).str.startswith("real:").all():
+        roads["source"] = "real:road-network"
     roads["confidence"] = 1.0
     return roads[["road_id", "geometry", "road_name", "road_class",
                   "source", "confidence"]].copy()
@@ -136,6 +140,72 @@ def latest_imerge_tiffs():
     if not folder.exists():
         return []
     return sorted(folder.glob("*.tif"), key=lambda p: p.stat().st_mtime, reverse=True)
+
+
+def load_observed_rainfall(bounds):
+    """Load catchment rainfall from recent IMERG rasters or the IMD CSV.
+
+    IMERG GeoTIFF pixels are treated as precipitation rates in mm/hour and
+    converted to 30-minute accumulation before hourly aggregation. The
+    resulting series is observed rainfall, not a future precipitation forecast.
+    """
+    import pandas as pd
+
+    samples = []
+    imerg_paths = latest_imerge_tiffs()
+    if imerg_paths:
+        # File timestamps are preferred; mtime is a fallback for local exports
+        # whose names do not retain the IMERG acquisition timestamp.
+        def acquisition_time(path: Path):
+            match = re.search(r"(20\d{6})[-_]?S(\d{6})", path.name)
+            if match:
+                return pd.to_datetime(
+                    match.group(1) + match.group(2), format="%Y%m%d%H%M%S", utc=True
+                )
+            return pd.Timestamp(path.stat().st_mtime, unit="s", tz="UTC")
+
+        imerg_paths = sorted(imerg_paths, key=acquisition_time)[-8:]
+        bbox = box(bounds.min_lon, bounds.min_lat, bounds.max_lon, bounds.max_lat)
+        for path in imerg_paths:
+            with rasterio.open(path) as src:
+                if src.crs is None:
+                    continue
+                geom = gpd.GeoSeries([bbox], crs="EPSG:4326").to_crs(src.crs).iloc[0]
+                pixels, _ = mask(src, [geom], crop=True, filled=False)
+                values = np.ma.asarray(pixels[0], dtype="float64")
+                valid = values.compressed()
+                valid = valid[np.isfinite(valid) & (valid >= 0)]
+                if valid.size == 0:
+                    continue
+                samples.append({
+                    "timestamp": acquisition_time(path),
+                    "lat": (bounds.min_lat + bounds.max_lat) / 2,
+                    "lon": (bounds.min_lon + bounds.max_lon) / 2,
+                    "rainfall_mm": float(valid.mean()) * 0.5,
+                })
+        if samples:
+            frame = pd.DataFrame(samples)
+            frame["timestamp"] = frame["timestamp"].dt.floor("h")
+            hourly = frame.groupby("timestamp", as_index=False).agg(
+                lat=("lat", "first"), lon=("lon", "first"), rainfall_mm=("rainfall_mm", "sum")
+            )
+            return hourly.sort_values("timestamp"), "real:gpm-imerg"
+
+    csv_path = RAW / "imd_rainfall.csv"
+    if csv_path.is_file():
+        frame = load_rainfall_csv(csv_path)
+        frame = frame[
+            frame["lat"].between(bounds.min_lat, bounds.max_lat)
+            & frame["lon"].between(bounds.min_lon, bounds.max_lon)
+        ]
+        if not frame.empty:
+            frame["timestamp"] = frame["timestamp"].dt.floor("h")
+            hourly = frame.groupby("timestamp", as_index=False).agg(
+                lat=("lat", "mean"), lon=("lon", "mean"), rainfall_mm=("rainfall_mm", "mean")
+            )
+            return hourly.sort_values("timestamp"), "real:imd"
+
+    raise FileNotFoundError("No IMERG GeoTIFF or catchment IMD rainfall CSV is available")
 
 
 def data_status() -> dict:

@@ -70,6 +70,9 @@ def run_simulation(graph: nx.DiGraph, node_inflow_m3_per_timestep: list[dict],
             if node in state.node_storage_m3:
                 state.node_storage_m3[node] += vol
 
+        remaining_capacity = dict(edge_capacity_m3)
+        routed_outflow = {node: 0.0 for node in graph.nodes}
+
         # 2. route what capacity allows, downstream, for every node (process
         #    in a stable order; small graph, a couple of passes is enough
         #    for the demo catchment to converge within a timestep)
@@ -80,15 +83,17 @@ def run_simulation(graph: nx.DiGraph, node_inflow_m3_per_timestep: list[dict],
                 if available <= 0:
                     continue
                 out_edges = list(graph.out_edges(node, data=True))
-                total_cap = sum(edge_capacity_m3.get((u, v), 0.0) for u, v, _ in out_edges)
+                total_cap = sum(remaining_capacity.get((u, v), 0.0) for u, v, _ in out_edges)
                 if total_cap <= 0 or not out_edges:
                     continue
                 to_route = min(available, total_cap)
                 for u, v, _attrs in out_edges:
-                    cap = edge_capacity_m3.get((u, v), 0.0)
+                    cap = remaining_capacity.get((u, v), 0.0)
                     share = (cap / total_cap) * to_route if total_cap > 0 else 0
                     deltas[u] -= share
                     deltas[v] += share
+                    remaining_capacity[(u, v)] = max(0.0, cap - share)
+                    routed_outflow[node] += share
             for n in graph.nodes:
                 state.node_storage_m3[n] = max(0.0, state.node_storage_m3[n] + deltas[n])
 
@@ -102,8 +107,21 @@ def run_simulation(graph: nx.DiGraph, node_inflow_m3_per_timestep: list[dict],
             area = ponding_area_m2.get(node, DEFAULT_PONDING_AREA_M2) if isinstance(ponding_area_m2, dict) else ponding_area_m2
             depth = vol / max(area, 1.0)  # simple mass-balance: depth = volume / ponding area
             depths_this_step[node] = round(float(depth), 4)
+        capacity_utilization = {}
+        for node in graph.nodes:
+            node_capacity = sum(
+                edge_capacity_m3.get((u, v), 0.0)
+                for u, v in graph.out_edges(node)
+            )
+            capacity_utilization[node] = round(
+                100.0 * routed_outflow[node] / node_capacity, 1
+            ) if node_capacity > 0 else 0.0
         state.node_depth_m = depths_this_step
-        state.timestep_log.append({"t_index": t, "depths_m": dict(depths_this_step)})
+        state.timestep_log.append({
+            "t_index": t,
+            "depths_m": dict(depths_this_step),
+            "capacity_utilization_pct": capacity_utilization,
+        })
 
     return state
 

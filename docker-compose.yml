@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   backend:
     build: ./backend
@@ -8,7 +6,11 @@ services:
     volumes:
       - ./data:/data
     environment:
+      - HYDROLOOP_DATA_DIR=/data
+      - HYDROLOOP_RAINFALL_MODE=demo
       # No SMS/IVR credentials set on purpose -- alerts run in MOCK mode.
+      # Set HYDROLOOP_ALERT_WEBHOOK_URL to enable the bilingual prototype webhook:
+      # - HYDROLOOP_ALERT_WEBHOOK_URL=
       # Set these only if you have real provider credentials:
       # - SMS_PROVIDER_API_KEY=
       # - IVR_PROVIDER_API_KEY=
