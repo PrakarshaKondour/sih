@@ -431,7 +431,7 @@ Every layer in the API and on the map is tagged with its provenance, and the das
 7. Move the in-memory catchment to **PostGIS** (service already defined behind `docker compose --profile with-db up`)
 8. Tile the DEM and parallelize per-catchment simulation for city-wide coverage
 9. Swap the mass-balance core for **EPA SWMM** once real network data justifies it
-10. Validate risk thresholds and routing policy with GHMC / HMWSSB / disaster-management experts; integrate SMS/IVR providers and Cell Broadcast.
+10. Validate risk thresholds and routing policy with GHMC / HMWSSB / disaster-management experts; integrate SMS/IVR providers and Cell Broadcast
 
 ---
 
