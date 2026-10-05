@@ -81,7 +81,7 @@ Urban floods are **dynamic, non-stationary and dominated by extremes**. A model 
 
 > **Honest scope:** we have **not** benchmarked against a pure-ML baseline (no labelled dataset exists to do that fairly). The argument above is about robustness, data requirements and explainability, not a measured accuracy win.
 
-### The physics chain
+#### The physics chain
 
 The full derivation is in [`docs/mathematical_formulation.pdf`](docs/mathematical_formulation.pdf). The core equations and where they live in code:
 
@@ -431,7 +431,7 @@ Every layer in the API and on the map is tagged with its provenance, and the das
 7. Move the in-memory catchment to **PostGIS** (service already defined behind `docker compose --profile with-db up`)
 8. Tile the DEM and parallelize per-catchment simulation for city-wide coverage
 9. Swap the mass-balance core for **EPA SWMM** once real network data justifies it
-10. Validate risk thresholds and routing policy with GHMC / HMWSSB / disaster-management experts; integrate SMS/IVR providers and Cell Broadcast
+10. Validate risk thresholds and routing policy with GHMC / HMWSSB / disaster-management experts; integrate SMS/IVR providers and Cell Broadcast.
 
 ---
 
